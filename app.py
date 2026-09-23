@@ -11,6 +11,10 @@ from google.genai import types
 from pypdf import PdfReader
 
 
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
 MODEL = "gemini-2.5-flash"
 MAX_FILE_SIZE_MB = 10
 
@@ -27,13 +31,18 @@ st.set_page_config(
 
 
 # ============================================================
-# HEADER
+# HEADER / BRANDING
 # ============================================================
 
 st.title("📄 Resume ATS Analyzer")
 
 st.caption(
-    "AI-powered ATS readiness analysis using Gemini Flash"
+    "AI-powered ATS readiness analysis using Gemini 2.5 Flash"
+)
+
+st.markdown(
+    "**Created by Muhammad Bilal Hussain**  \n"
+    "Full Stack Developer & AI Engineer"
 )
 
 st.info(
@@ -49,22 +58,22 @@ st.info(
 def get_api_key() -> str | None:
     """
     Get Gemini API key from Streamlit Secrets first,
-    then the session state, then environment variables.
+    then environment variables.
+
+    The API key is never requested from the end user.
     """
 
     try:
         key = st.secrets.get("GEMINI_API_KEY")
+
         if key:
             return str(key).strip()
+
     except Exception:
         pass
 
-    if "api_key" in st.session_state:
-        key = st.session_state["api_key"]
-        if key:
-            return str(key).strip()
-
     key = os.getenv("GEMINI_API_KEY")
+
     return key.strip() if key else None
 
 
@@ -78,23 +87,60 @@ def extract_text(uploaded_file: Any) -> str:
     """
 
     extension = uploaded_file.name.lower().rsplit(".", 1)[-1]
+
     data = uploaded_file.getvalue()
 
+    # --------------------------------------------------------
+    # PDF
+    # --------------------------------------------------------
+
     if extension == "pdf":
-        reader = PdfReader(io.BytesIO(data))
-        return "\n".join(page.extract_text() or "" for page in reader.pages)
+
+        reader = PdfReader(
+            io.BytesIO(data)
+        )
+
+        return "\n".join(
+            page.extract_text() or ""
+            for page in reader.pages
+        )
+
+    # --------------------------------------------------------
+    # DOCX
+    # --------------------------------------------------------
 
     if extension == "docx":
-        document = Document(io.BytesIO(data))
-        parts = [paragraph.text for paragraph in document.paragraphs]
+
+        document = Document(
+            io.BytesIO(data)
+        )
+
+        parts = [
+            paragraph.text
+            for paragraph in document.paragraphs
+        ]
 
         for table in document.tables:
+
             for row in table.rows:
-                parts.append(" | ".join(cell.text for cell in row.cells))
+
+                parts.append(
+                    " | ".join(
+                        cell.text
+                        for cell in row.cells
+                    )
+                )
 
         return "\n".join(parts)
 
-    return data.decode("utf-8", errors="replace")
+    # --------------------------------------------------------
+    # TXT
+    # --------------------------------------------------------
+
+    return data.decode(
+        "utf-8",
+        errors="replace"
+    )
 
 
 # ============================================================
@@ -106,25 +152,54 @@ def parse_json(text: str) -> dict[str, Any]:
     Safely parse Gemini's JSON response.
     """
 
-    cleaned = text.strip()
-    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s*```$", "", cleaned)
+    if not text:
+        raise ValueError(
+            "Gemini returned an empty response."
+        )
 
-    match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+    cleaned = text.strip()
+
+    # Remove Markdown JSON fences if Gemini returns them.
+    cleaned = re.sub(
+        r"^```(?:json)?\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+
+    cleaned = re.sub(
+        r"\s*```$",
+        "",
+        cleaned,
+    )
+
+    match = re.search(
+        r"\{.*\}",
+        cleaned,
+        flags=re.DOTALL,
+    )
 
     if not match:
-        raise ValueError("Gemini did not return valid JSON.")
 
-    result = json.loads(match.group(0))
+        raise ValueError(
+            "Gemini did not return valid JSON."
+        )
+
+    result = json.loads(
+        match.group(0)
+    )
 
     if not isinstance(result, dict):
-        raise ValueError("Gemini returned an unexpected response format.")
+
+        raise ValueError(
+            "Gemini returned an unexpected response format."
+        )
 
     return result
 
 
 # ============================================================
-# GEMINI ANALYSIS
+# GEMINI ATS ANALYSIS
 # ============================================================
 
 def analyze_resume(
@@ -135,14 +210,23 @@ def analyze_resume(
     api_key = get_api_key()
 
     if not api_key:
+
         raise RuntimeError(
-            "GEMINI_API_KEY is missing. Add it to Streamlit secrets, the environment, or the sidebar field."
+            "GEMINI_API_KEY is not configured. "
+            "Please add it to Streamlit Secrets."
         )
 
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(
+        api_key=api_key
+    )
 
     target_job = (
-        job_description.strip() if job_description.strip() else "Not provided. Evaluate general ATS readiness."
+        job_description.strip()
+        if job_description.strip()
+        else (
+            "Not provided. "
+            "Evaluate general ATS readiness."
+        )
     )
 
     prompt = f"""
@@ -161,6 +245,9 @@ IMPORTANT RULES:
 7. Do not invent achievements.
 8. Recommendations must remain truthful to the resume.
 9. The ATS score is an estimate, not the score of a specific ATS product.
+10. Do not recommend adding a keyword if the resume provides no truthful basis for it.
+11. Clearly distinguish missing keywords from skills the candidate actually possesses.
+12. Focus on practical, actionable resume improvements.
 
 Score the resume from 0 to 100 using these dimensions:
 
@@ -189,12 +276,14 @@ Use exactly this structure:
   "ats_score": 0,
   "score_label": "Strong",
   "summary": "...",
+
   "keyword_match": {{
     "score": 0,
     "matched_keywords": ["..."],
     "missing_keywords": ["..."],
     "notes": "..."
   }},
+
   "sections": [
     {{
       "section": "Experience",
@@ -202,16 +291,19 @@ Use exactly this structure:
       "feedback": "..."
     }}
   ],
+
   "formatting": {{
     "score": 0,
     "strengths": ["..."],
     "issues": ["..."]
   }},
+
   "content": {{
     "score": 0,
     "strengths": ["..."],
     "issues": ["..."]
   }},
+
   "improvements": [
     {{
       "priority": "High",
@@ -220,9 +312,11 @@ Use exactly this structure:
       "recommendation": "..."
     }}
   ],
+
   "quick_wins": [
     "..."
   ],
+
   "ats_checklist": [
     {{
       "item": "Standard section headings",
@@ -232,8 +326,14 @@ Use exactly this structure:
   ]
 }}
 
-Keep all scores between 0 and 100.
-Keep the improvements focused on approximately 5 to 10 genuinely useful recommendations.
+Additional requirements:
+
+- Keep all scores between 0 and 100.
+- Keep improvements focused on approximately 5 to 10 genuinely useful recommendations.
+- Use concise but specific feedback.
+- Never fabricate candidate information.
+- Do not claim that this is an official ATS score.
+- Analyze only the resume content provided.
 
 JOB DESCRIPTION:
 
@@ -254,7 +354,9 @@ RESUME:
         ),
     )
 
-    return parse_json(response.text)
+    return parse_json(
+        response.text or ""
+    )
 
 
 # ============================================================
@@ -262,9 +364,22 @@ RESUME:
 # ============================================================
 
 def clamp_score(value: Any) -> int:
+
     try:
-        return max(0, min(100, int(value)))
-    except (TypeError, ValueError):
+
+        return max(
+            0,
+            min(
+                100,
+                int(value),
+            ),
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
         return 0
 
 
@@ -272,186 +387,594 @@ def clamp_score(value: Any) -> int:
 # RESULTS UI
 # ============================================================
 
-def render_results(result: dict[str, Any]) -> None:
-    ats_score = clamp_score(result.get("ats_score", 0))
-    score_label = str(result.get("score_label", "Needs work")).strip() or "Needs work"
-    summary = str(result.get("summary", "No summary provided.")).strip() or "No summary provided."
+def render_results(
+    result: dict[str, Any],
+) -> None:
 
-    keyword_match = result.get("keyword_match") if isinstance(result.get("keyword_match"), dict) else {}
-    formatting = result.get("formatting") if isinstance(result.get("formatting"), dict) else {}
-    content = result.get("content") if isinstance(result.get("content"), dict) else {}
-    sections = result.get("sections") if isinstance(result.get("sections"), list) else []
-    improvements = result.get("improvements") if isinstance(result.get("improvements"), list) else []
-    quick_wins = result.get("quick_wins") if isinstance(result.get("quick_wins"), list) else []
-    checklist = result.get("ats_checklist") if isinstance(result.get("ats_checklist"), list) else []
+    ats_score = clamp_score(
+        result.get(
+            "ats_score",
+            0,
+        )
+    )
 
-    st.subheader("ATS Overview")
+    score_label = (
+        str(
+            result.get(
+                "score_label",
+                "Needs work",
+            )
+        ).strip()
+        or "Needs work"
+    )
 
-    col1, col2, col3 = st.columns([1.5, 1.3, 1.3])
+    summary = (
+        str(
+            result.get(
+                "summary",
+                "No summary provided.",
+            )
+        ).strip()
+        or "No summary provided."
+    )
+
+    keyword_match = (
+        result.get(
+            "keyword_match"
+        )
+        if isinstance(
+            result.get("keyword_match"),
+            dict,
+        )
+        else {}
+    )
+
+    formatting = (
+        result.get(
+            "formatting"
+        )
+        if isinstance(
+            result.get("formatting"),
+            dict,
+        )
+        else {}
+    )
+
+    content = (
+        result.get(
+            "content"
+        )
+        if isinstance(
+            result.get("content"),
+            dict,
+        )
+        else {}
+    )
+
+    sections = (
+        result.get(
+            "sections"
+        )
+        if isinstance(
+            result.get("sections"),
+            list,
+        )
+        else []
+    )
+
+    improvements = (
+        result.get(
+            "improvements"
+        )
+        if isinstance(
+            result.get("improvements"),
+            list,
+        )
+        else []
+    )
+
+    quick_wins = (
+        result.get(
+            "quick_wins"
+        )
+        if isinstance(
+            result.get("quick_wins"),
+            list,
+        )
+        else []
+    )
+
+    checklist = (
+        result.get(
+            "ats_checklist"
+        )
+        if isinstance(
+            result.get("ats_checklist"),
+            list,
+        )
+        else []
+    )
+
+    # ========================================================
+    # ATS OVERVIEW
+    # ========================================================
+
+    st.subheader("📊 ATS Overview")
+
+    col1, col2, col3 = st.columns(
+        [1.5, 1.3, 1.3]
+    )
+
     with col1:
-        st.metric("ATS Score", f"{ats_score}/100")
+
+        st.metric(
+            "ATS Score",
+            f"{ats_score}/100",
+        )
+
     with col2:
-        st.metric("Label", score_label)
+
+        st.metric(
+            "Assessment",
+            score_label,
+        )
+
     with col3:
-        st.metric("Keyword Match", f"{clamp_score(keyword_match.get('score', 0))}/100")
 
-    st.markdown(summary)
+        st.metric(
+            "Keyword Match",
+            f"{clamp_score(keyword_match.get('score', 0))}/100",
+        )
 
-    st.subheader("Keyword Match")
-    matched = keyword_match.get("matched_keywords", [])
-    missing = keyword_match.get("missing_keywords", [])
-    notes = keyword_match.get("notes", "")
+    st.progress(
+        ats_score / 100
+    )
+
+    # ========================================================
+    # SUMMARY
+    # ========================================================
+
+    st.subheader(
+        "🧾 Overall Assessment"
+    )
+
+    st.write(summary)
+
+    # ========================================================
+    # KEYWORD ANALYSIS
+    # ========================================================
+
+    st.subheader(
+        "🔑 Keyword Analysis"
+    )
+
+    matched = keyword_match.get(
+        "matched_keywords",
+        [],
+    )
+
+    missing = keyword_match.get(
+        "missing_keywords",
+        [],
+    )
+
+    notes = keyword_match.get(
+        "notes",
+        "",
+    )
 
     col4, col5 = st.columns(2)
+
     with col4:
-        st.write("**Matched keywords**")
+
+        st.markdown(
+            "**Matched Keywords**"
+        )
+
         if matched:
-            st.write(", ".join(str(item) for item in matched))
+
+            st.write(
+                ", ".join(
+                    str(item)
+                    for item in matched
+                )
+            )
+
         else:
-            st.write("No strongly matched keywords identified.")
+
+            st.write(
+                "No strongly matched keywords identified."
+            )
+
     with col5:
-        st.write("**Missing keywords**")
+
+        st.markdown(
+            "**Missing / Useful Keywords**"
+        )
+
         if missing:
-            st.write(", ".join(str(item) for item in missing))
+
+            st.write(
+                ", ".join(
+                    str(item)
+                    for item in missing
+                )
+            )
+
         else:
-            st.write("No obvious keyword gaps identified.")
+
+            st.write(
+                "No obvious keyword gaps identified."
+            )
 
     if notes:
+
         st.caption(notes)
 
-    st.subheader("Section Review")
+    # ========================================================
+    # SECTION REVIEW
+    # ========================================================
+
+    st.subheader(
+        "📌 Section Review"
+    )
+
     for item in sections:
-        section_name = str(item.get("section", "Section")).strip() or "Section"
-        status = str(item.get("status", "Needs review")).strip() or "Needs review"
-        feedback = str(item.get("feedback", "No feedback provided.")).strip() or "No feedback provided."
-        st.markdown(f"**{section_name}** — {status}")
-        st.write(feedback)
 
-    st.subheader("Formatting & Content")
+        section_name = (
+            str(
+                item.get(
+                    "section",
+                    "Section",
+                )
+            ).strip()
+            or "Section"
+        )
+
+        status = (
+            str(
+                item.get(
+                    "status",
+                    "Needs review",
+                )
+            ).strip()
+            or "Needs review"
+        )
+
+        feedback = (
+            str(
+                item.get(
+                    "feedback",
+                    "No feedback provided.",
+                )
+            ).strip()
+            or "No feedback provided."
+        )
+
+        with st.expander(
+            f"{section_name} — {status}"
+        ):
+
+            st.write(
+                feedback
+            )
+
+    # ========================================================
+    # FORMATTING + CONTENT
+    # ========================================================
+
+    st.subheader(
+        "🛠️ Formatting & Content"
+    )
+
     col6, col7 = st.columns(2)
+
     with col6:
-        st.write(f"**Formatting score:** {clamp_score(formatting.get('score', 0))}/100")
-        if formatting.get("strengths"):
-            st.write("Strengths:")
-            for point in formatting["strengths"]:
-                st.write(f"- {point}")
-        if formatting.get("issues"):
-            st.write("Issues:")
-            for point in formatting["issues"]:
-                st.write(f"- {point}")
+
+        st.markdown(
+            f"**Formatting Score: "
+            f"{clamp_score(formatting.get('score', 0))}/100**"
+        )
+
+        strengths = formatting.get(
+            "strengths",
+            [],
+        )
+
+        issues = formatting.get(
+            "issues",
+            [],
+        )
+
+        if strengths:
+
+            st.write("**Strengths:**")
+
+            for point in strengths:
+
+                st.write(
+                    f"✅ {point}"
+                )
+
+        if issues:
+
+            st.write("**Issues:**")
+
+            for point in issues:
+
+                st.write(
+                    f"⚠️ {point}"
+                )
+
     with col7:
-        st.write(f"**Content score:** {clamp_score(content.get('score', 0))}/100")
-        if content.get("strengths"):
-            st.write("Strengths:")
-            for point in content["strengths"]:
-                st.write(f"- {point}")
-        if content.get("issues"):
-            st.write("Issues:")
-            for point in content["issues"]:
-                st.write(f"- {point}")
 
-    st.subheader("Priority Improvements")
+        st.markdown(
+            f"**Content Score: "
+            f"{clamp_score(content.get('score', 0))}/100**"
+        )
+
+        strengths = content.get(
+            "strengths",
+            [],
+        )
+
+        issues = content.get(
+            "issues",
+            [],
+        )
+
+        if strengths:
+
+            st.write("**Strengths:**")
+
+            for point in strengths:
+
+                st.write(
+                    f"✅ {point}"
+                )
+
+        if issues:
+
+            st.write("**Issues:**")
+
+            for point in issues:
+
+                st.write(
+                    f"⚠️ {point}"
+                )
+
+    # ========================================================
+    # PRIORITY IMPROVEMENTS
+    # ========================================================
+
+    st.subheader(
+        "🚀 Recommended Improvements"
+    )
+
     if improvements:
-        for i, item in enumerate(improvements, start=1):
-            priority = str(item.get("priority", "Medium")).strip() or "Medium"
-            area = str(item.get("area", "General")).strip() or "General"
-            problem = str(item.get("problem", "No problem identified")).strip() or "No problem identified"
-            recommendation = str(item.get("recommendation", "No recommendation provided")).strip() or "No recommendation provided"
-            with st.expander(f"{i}. {area} ({priority})"):
-                st.write(f"**Problem:** {problem}")
-                st.write(f"**Recommendation:** {recommendation}")
-    else:
-        st.write("No improvement items were returned.")
 
-    st.subheader("Quick Wins")
+        for index, item in enumerate(
+            improvements,
+            start=1,
+        ):
+
+            priority = (
+                str(
+                    item.get(
+                        "priority",
+                        "Medium",
+                    )
+                ).strip()
+                or "Medium"
+            )
+
+            area = (
+                str(
+                    item.get(
+                        "area",
+                        "General",
+                    )
+                ).strip()
+                or "General"
+            )
+
+            problem = (
+                str(
+                    item.get(
+                        "problem",
+                        "No problem identified.",
+                    )
+                ).strip()
+                or "No problem identified."
+            )
+
+            recommendation = (
+                str(
+                    item.get(
+                        "recommendation",
+                        "No recommendation provided.",
+                    )
+                ).strip()
+                or "No recommendation provided."
+            )
+
+            with st.expander(
+                f"{index}. {area} — {priority}"
+            ):
+
+                st.markdown(
+                    f"**Problem:** {problem}"
+                )
+
+                st.markdown(
+                    f"**Recommendation:** {recommendation}"
+                )
+
+    else:
+
+        st.write(
+            "No improvement items were returned."
+        )
+
+    # ========================================================
+    # QUICK WINS
+    # ========================================================
+
+    st.subheader(
+        "⚡ Quick Wins"
+    )
+
     if quick_wins:
+
         for item in quick_wins:
-            st.write(f"- {item}")
+
+            st.write(
+                f"• {item}"
+            )
+
     else:
-        st.write("No quick wins were identified.")
 
-    st.subheader("ATS Checklist")
+        st.write(
+            "No quick wins were identified."
+        )
+
+    # ========================================================
+    # ATS CHECKLIST
+    # ========================================================
+
+    st.subheader(
+        "✅ ATS Checklist"
+    )
+
     for item in checklist:
-        label = str(item.get("item", "Checklist item")).strip() or "Checklist item"
-        status = str(item.get("status", "Unknown")).strip() or "Unknown"
-        explanation = str(item.get("explanation", "No explanation provided.")).strip() or "No explanation provided."
-        st.markdown(f"**{label}** — {status}")
-        st.write(explanation)
 
-    with st.expander("View raw analysis JSON"):
+        label = (
+            str(
+                item.get(
+                    "item",
+                    "Checklist item",
+                )
+            ).strip()
+            or "Checklist item"
+        )
+
+        status = (
+            str(
+                item.get(
+                    "status",
+                    "Unknown",
+                )
+            ).strip()
+            or "Unknown"
+        )
+
+        explanation = (
+            str(
+                item.get(
+                    "explanation",
+                    "No explanation provided.",
+                )
+            ).strip()
+            or "No explanation provided."
+        )
+
+        status_lower = status.lower()
+
+        icon = (
+            "✅"
+            if status_lower in {
+                "pass",
+                "good",
+                "yes",
+            }
+            else "⚠️"
+        )
+
+        st.write(
+            f"{icon} **{label}** — "
+            f"{status} — "
+            f"{explanation}"
+        )
+
+    # ========================================================
+    # RAW JSON
+    # ========================================================
+
+    with st.expander(
+        "View Raw Analysis JSON"
+    ):
+
         st.json(result)
 
-
-# ============================================================
-# API KEY INPUT
-# ============================================================
-
-if "api_key" not in st.session_state:
-    st.session_state["api_key"] = get_api_key() or ""
-
-st.sidebar.header("Settings")
-api_key_input = st.sidebar.text_input(
-    "Gemini API Key",
-    type="password",
-    value=st.session_state["api_key"],
-    help="Optional for local testing. It is stored in the current session only.",
-)
-if api_key_input:
-    st.session_state["api_key"] = api_key_input
 
 # ============================================================
 # FILE UPLOAD
 # ============================================================
 
 uploaded_file = st.file_uploader(
-    "Upload your resume",
-    type=["pdf", "docx", "txt"],
-    help="Supported formats: PDF, DOCX, TXT. Maximum size: 10 MB.",
+    "📎 Upload Your Resume",
+    type=[
+        "pdf",
+        "docx",
+        "txt",
+    ],
+    help=(
+        "Supported formats: PDF, DOCX, TXT. "
+        "Maximum size: 10 MB."
+    ),
 )
+
 
 # ============================================================
 # JOB DESCRIPTION
 # ============================================================
 
 job_description = st.text_area(
-    "Job Description (recommended)",
+    "💼 Target Job Description",
     height=220,
-    placeholder="Paste the target job description here for targeted keyword analysis...",
+    placeholder=(
+        "Paste the target job description here "
+        "for targeted keyword analysis..."
+    ),
 )
+
+
+st.caption(
+    "💡 Adding a job description provides more targeted "
+    "keyword and relevance analysis."
+)
+
 
 # ============================================================
 # ANALYZE BUTTON
 # ============================================================
 
-if st.button("🔍 Analyze Resume", type="primary", use_container_width=True):
+if st.button(
+    "🔍 Analyze Resume",
+    type="primary",
+    use_container_width=True,
+):
+
+    # --------------------------------------------------------
+    # File validation
+    # --------------------------------------------------------
+
     if uploaded_file is None:
-        st.warning("Please upload a resume first.")
+
+        st.warning(
+            "Please upload a resume first."
+        )
+
         st.stop()
 
-    if uploaded_file.size > MAX_FILE_SIZE_MB * 1024 * 1024:
-        st.warning(f"The uploaded file exceeds the {MAX_FILE_SIZE_MB} MB limit.")
-        st.stop()
-
-    try:
-        with st.spinner("Extracting resume text and evaluating ATS fit..."):
-            resume_text = extract_text(uploaded_file)
-
-        if not resume_text.strip():
-            st.warning("The uploaded file did not contain any readable text.")
-            st.stop()
-
-        with st.spinner("Running Gemini ATS analysis..."):
-            analysis = analyze_resume(resume_text, job_description)
-
-        render_results(analysis)
-
-    except Exception as exc:  # pragma: no cover - Streamlit UI path
-        st.error(f"Analysis failed: {exc}")
-        st.exception(exc)
-
+    # --------------------------------------------------------
     # File size validation
+    # --------------------------------------------------------
 
-    if uploaded_file.size > MAX_FILE_SIZE_MB * 1024 * 1024:
+    if (
+        uploaded_file.size
+        > MAX_FILE_SIZE_MB * 1024 * 1024
+    ):
 
         st.error(
             f"File is too large. "
@@ -463,35 +986,55 @@ if st.button("🔍 Analyze Resume", type="primary", use_container_width=True):
 
     try:
 
+        # ----------------------------------------------------
+        # Extract resume
+        # ----------------------------------------------------
+
         with st.spinner(
-            "Extracting resume text and analyzing it with Gemini..."
+            "📄 Extracting resume text..."
         ):
 
             resume_text = extract_text(
                 uploaded_file
             )
 
-            # Basic extraction validation
+        if len(
+            resume_text.strip()
+        ) < 80:
 
-            if len(resume_text.strip()) < 80:
+            st.error(
+                "Very little readable text was found. "
+                "If this is a scanned PDF, upload a "
+                "text-based PDF or DOCX instead."
+            )
 
-                st.error(
-                    "Very little readable text was found. "
-                    "If this is a scanned PDF, upload a "
-                    "text-based PDF or DOCX instead."
-                )
+            st.stop()
 
-                st.stop()
+        # ----------------------------------------------------
+        # Gemini analysis
+        # ----------------------------------------------------
 
-            result = analyze_resume(
+        with st.spinner(
+            "🤖 Running Gemini ATS analysis..."
+        ):
+
+            analysis = analyze_resume(
                 resume_text,
                 job_description,
             )
 
-        st.session_state.analysis = result
+        # ----------------------------------------------------
+        # Save result
+        # ----------------------------------------------------
+
+        st.session_state.analysis = analysis
 
         st.session_state.resume_name = (
             uploaded_file.name
+        )
+
+        st.success(
+            "Resume analysis completed successfully."
         )
 
     except Exception as exc:
@@ -500,325 +1043,68 @@ if st.button("🔍 Analyze Resume", type="primary", use_container_width=True):
             f"Analysis failed: {exc}"
         )
 
+        with st.expander(
+            "Technical Error Details"
+        ):
+
+            st.exception(exc)
+
         st.stop()
 
 
 # ============================================================
-# DISPLAY RESULTS
+# DISPLAY SAVED RESULTS
 # ============================================================
 
 result = st.session_state.get(
     "analysis"
 )
 
-
 if result:
 
     st.divider()
 
     st.subheader(
-        f"Analysis — "
+        f"📋 Analysis — "
         f"{st.session_state.get('resume_name', 'Resume')}"
     )
 
-    # --------------------------------------------------------
-    # TOP METRICS
-    # --------------------------------------------------------
-
-    score = clamp_score(
-        result.get("ats_score")
+    render_results(
+        result
     )
 
-    keyword = result.get(
-        "keyword_match",
-        {}
-    )
 
-    c1, c2, c3 = st.columns(3)
+# ============================================================
+# PRIVACY NOTICE
+# ============================================================
 
-    c1.metric(
-        "ATS Readiness",
-        f"{score}/100"
-    )
+st.divider()
 
-    c2.metric(
-        "Assessment",
-        str(
-            result.get(
-                "score_label",
-                "Estimated"
-            )
-        ),
-    )
+st.caption(
+    "🔐 Privacy: Resume text is sent to Google's "
+    "Gemini API for analysis. Do not upload confidential "
+    "documents unless you are comfortable with that processing."
+)
 
-    c3.metric(
-        "Keyword Match",
-        f"{clamp_score(keyword.get('score'))}/100",
-    )
 
-    st.progress(
-        score / 100
-    )
+# ============================================================
+# FOOTER
+# ============================================================
 
-    # --------------------------------------------------------
-    # SUMMARY
-    # --------------------------------------------------------
-
-    st.subheader(
-        "🧾 Overall Assessment"
-    )
-
-    st.write(
-        result.get(
-            "summary",
-            "No summary returned."
-        )
-    )
-
-    # --------------------------------------------------------
-    # KEYWORDS
-    # --------------------------------------------------------
-
-    st.subheader(
-        "🔑 Keyword Analysis"
-    )
-
-    left, right = st.columns(2)
-
-    with left:
-
-        st.markdown(
-            "**Matched Keywords**"
-        )
-
-        matched = keyword.get(
-            "matched_keywords",
-            []
-        )
-
-        st.write(
-            ", ".join(
-                map(str, matched)
-            )
-            if matched
-            else
-            "None identified."
-        )
-
-    with right:
-
-        st.markdown(
-            "**Missing / Useful Keywords**"
-        )
-
-        missing = keyword.get(
-            "missing_keywords",
-            []
-        )
-
-        st.write(
-            ", ".join(
-                map(str, missing)
-            )
-            if missing
-            else
-            "None identified."
-        )
-
-    if keyword.get("notes"):
-
-        st.caption(
-            keyword["notes"]
-        )
-
-    # --------------------------------------------------------
-    # SECTION REVIEW
-    # --------------------------------------------------------
-
-    st.subheader(
-        "📌 Section Review"
-    )
-
-    for item in result.get(
-        "sections",
-        []
-    ):
-
-        with st.expander(
-            f"{item.get('section', 'Section')} "
-            f"— {item.get('status', 'Review')}"
-        ):
-
-            st.write(
-                item.get(
-                    "feedback",
-                    ""
-                )
-            )
-
-    # --------------------------------------------------------
-    # FORMATTING + CONTENT
-    # --------------------------------------------------------
-
-    st.subheader(
-        "🛠️ Formatting & Content"
-    )
-
-    formatting = result.get(
-        "formatting",
-        {}
-    )
-
-    content = result.get(
-        "content",
-        {}
-    )
-
-    f1, f2 = st.columns(2)
-
-    with f1:
-
-        st.markdown(
-            f"**Formatting: "
-            f"{clamp_score(formatting.get('score'))}/100**"
-        )
-
-        for item in formatting.get(
-            "strengths",
-            []
-        ):
-
-            st.write(
-                f"✅ {item}"
-            )
-
-        for item in formatting.get(
-            "issues",
-            []
-        ):
-
-            st.write(
-                f"⚠️ {item}"
-            )
-
-    with f2:
-
-        st.markdown(
-            f"**Content: "
-            f"{clamp_score(content.get('score'))}/100**"
-        )
-
-        for item in content.get(
-            "strengths",
-            []
-        ):
-
-            st.write(
-                f"✅ {item}"
-            )
-
-        for item in content.get(
-            "issues",
-            []
-        ):
-
-            st.write(
-                f"⚠️ {item}"
-            )
-
-    # --------------------------------------------------------
-    # IMPROVEMENTS
-    # --------------------------------------------------------
-
-    st.subheader(
-        "🚀 Recommended Improvements"
-    )
-
-    for index, item in enumerate(
-        result.get(
-            "improvements",
-            []
-        ),
-        start=1,
-    ):
-
-        with st.expander(
-            f"{index}. "
-            f"[{item.get('priority', 'Medium')}] "
-            f"{item.get('area', 'Resume')}"
-        ):
-
-            st.markdown(
-                f"**Problem:** "
-                f"{item.get('problem', '')}"
-            )
-
-            st.markdown(
-                f"**Recommendation:** "
-                f"{item.get('recommendation', '')}"
-            )
-
-    # --------------------------------------------------------
-    # QUICK WINS
-    # --------------------------------------------------------
-
-    st.subheader(
-        "⚡ Quick Wins"
-    )
-
-    for item in result.get(
-        "quick_wins",
-        []
-    ):
-
-        st.write(
-            f"• {item}"
-        )
-
-    # --------------------------------------------------------
-    # CHECKLIST
-    # --------------------------------------------------------
-
-    st.subheader(
-        "✅ ATS Checklist"
-    )
-
-    for item in result.get(
-        "ats_checklist",
-        []
-    ):
-
-        status = str(
-            item.get(
-                "status",
-                "Review"
-            )
-        ).lower()
-
-        icon = (
-            "✅"
-            if status in {
-                "pass",
-                "good",
-                "yes",
-            }
-            else
-            "⚠️"
-        )
-
-        st.write(
-            f"{icon} "
-            f"**{item.get('item', '')}** "
-            f"— "
-            f"{item.get('explanation', '')}"
-        )
-
-    # --------------------------------------------------------
-    # PRIVACY
-    # --------------------------------------------------------
-
-    st.caption(
-        "Privacy: the resume text is sent to Google's "
-        "Gemini API for analysis. Do not upload confidential "
-        "documents unless you are comfortable with that processing."
-    )
+st.markdown(
+    """
+    <div style="text-align: center; padding: 20px 0 10px 0;">
+        <p style="margin-bottom: 4px;">
+            <strong>Resume ATS Analyzer</strong>
+        </p>
+        <p style="margin-bottom: 4px;">
+            Built by <strong>Muhammad Bilal Hussain</strong>
+        </p>
+        <p style="font-size: 13px; color: #888;">
+            Full Stack Developer & AI Engineer
+            • Powered by Gemini 2.5 Flash
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
